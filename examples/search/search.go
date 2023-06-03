@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/koron/go-ssdp"
+	"github.com/alexballas/go-ssdp"
 )
 
 func main() {

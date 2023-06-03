@@ -1,4 +1,4 @@
-module github.com/koron/go-ssdp
+module github.com/alexballas/go-ssdp
 
 go 1.19
 

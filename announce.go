@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/koron/go-ssdp/internal/multicast"
+	"github.com/alexballas/go-ssdp/internal/multicast"
 )
 
 // AnnounceAlive sends ssdp:alive message.

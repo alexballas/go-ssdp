@@ -5,7 +5,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/koron/go-ssdp/internal/ssdplog"
+	"github.com/alexballas/go-ssdp/internal/ssdplog"
 )
 
 func TestLoggerProvider(t *testing.T) {

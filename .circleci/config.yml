@@ -3,7 +3,7 @@ jobs:
   build:
     docker:
       - image: circleci/golang:latest
-    working_directory: /go/src/github.com/koron/go-ssdp
+    working_directory: /go/src/github.com/alexballas/go-ssdp
     steps:
       - checkout
       - run: go get -v -t -d ./...
