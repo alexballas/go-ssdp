@@ -1,6 +1,7 @@
 package ssdp
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -128,40 +129,71 @@ func TestSearch_Response(t *testing.T) {
 }
 
 func TestSearchCollector(t *testing.T) {
-	from := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 1900}
-	valid := []byte("HTTP/1.1 200 OK\r\nST: upnp:rootdevice\r\nLOCATION: http://192.168.1.20:8080/desc.xml\r\n\r\n")
-	oversized := append(append([]byte{}, valid[:len(valid)-2]...),
+	type packet struct {
+		from net.Addr
+		data []byte
+	}
+	udp := func(ip string) net.Addr { return &net.UDPAddr{IP: net.ParseIP(ip), Port: 1900} }
+	reply := func(st, location string) []byte {
+		msg := "HTTP/1.1 200 OK\r\nST: " + st + "\r\nUSN: uuid:x::" + st + "\r\n"
+		if location != "" {
+			msg += "LOCATION: " + location + "\r\n"
+		}
+		return []byte(msg + "\r\n")
+	}
+	tv := reply("upnp:rootdevice", "http://192.168.1.20:8080/desc.xml")
+	oversized := append(append([]byte{}, tv[:len(tv)-2]...),
 		[]byte("X-PAD: "+strings.Repeat("a", maxSearchResponseSize)+"\r\n\r\n")...)
+
+	flood := func(n int, distinctSources bool) []packet {
+		pp := make([]packet, n)
+		for i := range pp {
+			from := udp("192.168.1.66")
+			if distinctSources {
+				from = udp(fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255))
+			}
+			pp[i] = packet{from, reply("upnp:rootdevice", fmt.Sprintf("http://192.168.1.66:%d/x", 1000+i))}
+		}
+		return pp
+	}
 
 	tt := []struct {
 		name        string
-		packets     [][]byte
+		packets     []packet
 		wantKept    int
 		wantDropped int
+		wantLast    string // LOCATION expected among kept replies
 	}{
-		{"oversized datagram ignored", [][]byte{oversized, valid}, 1, 0},
-		{"count capped, rest drained", func() [][]byte {
-			pp := make([][]byte, maxSearchResponses+3)
-			for i := range pp {
-				pp[i] = valid
-			}
-			return pp
-		}(), maxSearchResponses, 3},
+		{"oversized datagram ignored", []packet{{udp("192.168.1.20"), oversized}, {udp("192.168.1.20"), tv}}, 1, 0, ""},
+		{"exact repeats dropped, distinct ST kept", []packet{
+			{udp("192.168.1.20"), tv},
+			{udp("192.168.1.20"), tv},
+			{udp("192.168.1.20"), reply("urn:schemas-upnp-org:device:MediaRenderer:1", "http://192.168.1.20:8080/desc.xml")},
+		}, 2, 0, ""},
+		{"reply without LOCATION skipped", []packet{{udp("192.168.1.20"), reply("upnp:rootdevice", "")}}, 0, 0, ""},
+		{"one sender cannot crowd out a later device", append(flood(maxSearchResponses, false), packet{udp("192.168.1.20"), tv}),
+			maxSearchResponsesPerSource + 1, maxSearchResponses - maxSearchResponsesPerSource, "http://192.168.1.20:8080/desc.xml"},
+		{"global cap, rest drained", flood(maxSearchResponses+3, true), maxSearchResponses, 3, ""},
 	}
 
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
 			var c searchCollector
 			for i, p := range tc.packets {
-				if err := c.handle(from, p); err != nil {
+				if err := c.handle(p.from, p.data); err != nil {
 					t.Fatalf("packet %d: handle stopped reading: %v", i, err)
 				}
 			}
 			if len(c.list) != tc.wantKept || c.dropped != tc.wantDropped {
 				t.Fatalf("kept=%d dropped=%d, want kept=%d dropped=%d", len(c.list), c.dropped, tc.wantKept, tc.wantDropped)
 			}
-			if got := c.list[0].From; got != net.Addr(from) {
-				t.Fatalf("From = %v, want %v", got, from)
+			for _, srv := range c.list {
+				if srv.From == nil {
+					t.Fatalf("reply %q kept without From", srv.Location)
+				}
+			}
+			if tc.wantLast != "" && c.list[len(c.list)-1].Location != tc.wantLast {
+				t.Fatalf("last kept = %q, want %q", c.list[len(c.list)-1].Location, tc.wantLast)
 			}
 		})
 	}

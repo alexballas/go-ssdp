@@ -101,7 +101,7 @@ func Search(searchType string, waitSec int, localAddr string) ([]Service, error)
 		return nil, err
 	}
 	if c.dropped > 0 {
-		ssdplog.Printf("search dropped %d responses over limit %d", c.dropped, maxSearchResponses)
+		ssdplog.Printf("search dropped %d responses over limits (%d total, %d per source)", c.dropped, maxSearchResponses, maxSearchResponsesPerSource)
 	}
 
 	return c.list, err
@@ -115,14 +115,27 @@ const (
 	// maxSearchResponses bounds memory held during the wait window, so a
 	// flood of responses cannot grow the list without limit.
 	maxSearchResponses = 4096
+
+	// maxSearchResponsesPerSource keeps one sender from filling
+	// maxSearchResponses before real devices, which answer after a random
+	// delay of up to MX seconds, get a chance.
+	maxSearchResponsesPerSource = 128
 )
 
 // searchCollector gathers search responses within size and count bounds.
 // Responses past the bounds are dropped while reading continues, so the
-// socket keeps draining until the wait window ends.
+// socket keeps draining until the wait window ends. Responses without a
+// LOCATION and exact repeats (same source, LOCATION, ST and USN) are skipped
+// before counting; distinct ST/USN records for one LOCATION are kept.
 type searchCollector struct {
-	list    []Service
-	dropped int
+	list      []Service
+	dropped   int
+	seen      map[searchKey]struct{}
+	perSource map[string]int
+}
+
+type searchKey struct {
+	source, location, st, usn string
 }
 
 func (c *searchCollector) handle(a net.Addr, d []byte) error {
@@ -130,18 +143,44 @@ func (c *searchCollector) handle(a net.Addr, d []byte) error {
 		ssdplog.Printf("oversized search response from %s: %d bytes", a.String(), len(d))
 		return nil
 	}
-	if len(c.list) >= maxSearchResponses {
-		c.dropped++
-		return nil
-	}
 	srv, err := parseService(a, d)
 	if err != nil {
 		ssdplog.Printf("invalid search response from %s: %s", a.String(), err)
 		return nil
 	}
+	if srv.Location == "" {
+		return nil
+	}
+	source := sourceHost(a)
+	key := searchKey{source: source, location: srv.Location, st: srv.Type, usn: srv.USN}
+	if _, dup := c.seen[key]; dup {
+		return nil
+	}
+	if len(c.list) >= maxSearchResponses || c.perSource[source] >= maxSearchResponsesPerSource {
+		c.dropped++
+		return nil
+	}
+	if c.seen == nil {
+		c.seen = make(map[searchKey]struct{})
+		c.perSource = make(map[string]int)
+	}
+	c.seen[key] = struct{}{}
+	c.perSource[source]++
 	c.list = append(c.list, *srv)
 	ssdplog.Printf("search response from %s: %s", a.String(), srv.USN)
 	return nil
+}
+
+// sourceHost returns the IP of a reply's sender, without the port: one host
+// may answer from several ports.
+func sourceHost(a net.Addr) string {
+	if ua, ok := a.(*net.UDPAddr); ok {
+		return ua.IP.String()
+	}
+	if host, _, err := net.SplitHostPort(a.String()); err == nil {
+		return host
+	}
+	return a.String()
 }
 
 func buildSearch(raddr net.Addr, searchType string, waitSec int) ([]byte, error) {
