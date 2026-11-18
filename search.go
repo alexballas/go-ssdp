@@ -29,6 +29,9 @@ type Service struct {
 	// Server is a property of "SERVER"
 	Server string
 
+	// From is the sender (UDP source address) of the response.
+	From net.Addr
+
 	rawHeader http.Header
 	maxAge    *int
 }
@@ -92,23 +95,53 @@ func Search(searchType string, waitSec int, localAddr string) ([]Service, error)
 	}
 
 	// wait response.
-	var list []Service
-	h := func(a net.Addr, d []byte) error {
-		srv, err := parseService(a, d)
-		if err != nil {
-			ssdplog.Printf("invalid search response from %s: %s", a.String(), err)
-			return nil
-		}
-		list = append(list, *srv)
-		ssdplog.Printf("search response from %s: %s", a.String(), srv.USN)
-		return nil
-	}
+	var c searchCollector
 	d := time.Second * time.Duration(waitSec)
-	if err := conn.ReadPackets(d, h); err != nil {
+	if err := conn.ReadPackets(d, c.handle); err != nil {
 		return nil, err
 	}
+	if c.dropped > 0 {
+		ssdplog.Printf("search dropped %d responses over limit %d", c.dropped, maxSearchResponses)
+	}
 
-	return list, err
+	return c.list, err
+}
+
+const (
+	// maxSearchResponseSize drops datagrams larger than any real SSDP
+	// response, which fits in one MTU.
+	maxSearchResponseSize = 8 << 10
+
+	// maxSearchResponses bounds memory held during the wait window, so a
+	// flood of responses cannot grow the list without limit.
+	maxSearchResponses = 4096
+)
+
+// searchCollector gathers search responses within size and count bounds.
+// Responses past the bounds are dropped while reading continues, so the
+// socket keeps draining until the wait window ends.
+type searchCollector struct {
+	list    []Service
+	dropped int
+}
+
+func (c *searchCollector) handle(a net.Addr, d []byte) error {
+	if len(d) > maxSearchResponseSize {
+		ssdplog.Printf("oversized search response from %s: %d bytes", a.String(), len(d))
+		return nil
+	}
+	if len(c.list) >= maxSearchResponses {
+		c.dropped++
+		return nil
+	}
+	srv, err := parseService(a, d)
+	if err != nil {
+		ssdplog.Printf("invalid search response from %s: %s", a.String(), err)
+		return nil
+	}
+	c.list = append(c.list, *srv)
+	ssdplog.Printf("search response from %s: %s", a.String(), srv.USN)
+	return nil
 }
 
 func buildSearch(raddr net.Addr, searchType string, waitSec int) ([]byte, error) {
@@ -149,6 +182,7 @@ func parseService(addr net.Addr, data []byte) (*Service, error) {
 		USN:       resp.Header.Get("USN"),
 		Location:  resp.Header.Get("LOCATION"),
 		Server:    resp.Header.Get("SERVER"),
+		From:      addr,
 		rawHeader: resp.Header,
 	}, nil
 }

@@ -121,6 +121,49 @@ func TestSearch_Response(t *testing.T) {
 		if s.Server != "server:search+response" {
 			t.Errorf("unexpected service#%d server: want=%q got=%q", i, "server:search+response", s.Server)
 		}
+		if ua, ok := s.From.(*net.UDPAddr); !ok || ua.IP == nil {
+			t.Errorf("service#%d missing UDP source address: got=%v", i, s.From)
+		}
+	}
+}
+
+func TestSearchCollector(t *testing.T) {
+	from := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 1900}
+	valid := []byte("HTTP/1.1 200 OK\r\nST: upnp:rootdevice\r\nLOCATION: http://192.168.1.20:8080/desc.xml\r\n\r\n")
+	oversized := append(append([]byte{}, valid[:len(valid)-2]...),
+		[]byte("X-PAD: "+strings.Repeat("a", maxSearchResponseSize)+"\r\n\r\n")...)
+
+	tt := []struct {
+		name        string
+		packets     [][]byte
+		wantKept    int
+		wantDropped int
+	}{
+		{"oversized datagram ignored", [][]byte{oversized, valid}, 1, 0},
+		{"count capped, rest drained", func() [][]byte {
+			pp := make([][]byte, maxSearchResponses+3)
+			for i := range pp {
+				pp[i] = valid
+			}
+			return pp
+		}(), maxSearchResponses, 3},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			var c searchCollector
+			for i, p := range tc.packets {
+				if err := c.handle(from, p); err != nil {
+					t.Fatalf("packet %d: handle stopped reading: %v", i, err)
+				}
+			}
+			if len(c.list) != tc.wantKept || c.dropped != tc.wantDropped {
+				t.Fatalf("kept=%d dropped=%d, want kept=%d dropped=%d", len(c.list), c.dropped, tc.wantKept, tc.wantDropped)
+			}
+			if got := c.list[0].From; got != net.Addr(from) {
+				t.Fatalf("From = %v, want %v", got, from)
+			}
+		})
 	}
 }
 
