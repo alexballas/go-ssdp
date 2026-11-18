@@ -168,7 +168,9 @@ func TestSearchCollector(t *testing.T) {
 		{"exact repeats dropped, distinct ST kept", []packet{
 			{udp("192.168.1.20"), tv},
 			{udp("192.168.1.20"), tv},
-			{udp("192.168.1.20"), reply("urn:schemas-upnp-org:device:MediaRenderer:1", "http://192.168.1.20:8080/desc.xml")},
+			// Same source, LOCATION and USN; only ST differs. ST carries the
+			// renderer evidence callers order by, so it must be part of the key.
+			{udp("192.168.1.20"), []byte("HTTP/1.1 200 OK\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:x::upnp:rootdevice\r\nLOCATION: http://192.168.1.20:8080/desc.xml\r\n\r\n")},
 		}, 2, 0, ""},
 		{"reply without LOCATION skipped", []packet{{udp("192.168.1.20"), reply("upnp:rootdevice", "")}}, 0, 0, ""},
 		{"one sender cannot crowd out a later device", append(flood(maxSearchResponses, false), packet{udp("192.168.1.20"), tv}),
