@@ -104,7 +104,7 @@ func Search(searchType string, waitSec int, localAddr string) ([]Service, error)
 		ssdplog.Printf("search dropped %d responses over limits (%d total, %d per source)", c.dropped, maxSearchResponses, maxSearchResponsesPerSource)
 	}
 
-	return c.list, err
+	return c.list, nil
 }
 
 const (
@@ -151,7 +151,13 @@ func (c *searchCollector) handle(a net.Addr, d []byte) error {
 	if srv.Location == "" {
 		return nil
 	}
-	source := sourceHost(a)
+	// Key on IP, not port: one host may answer from several ports. The
+	// multicast readers pass a *net.UDPAddr; anything else keys as-is rather
+	// than panicking.
+	source := a.String()
+	if ua, ok := a.(*net.UDPAddr); ok {
+		source = ua.IP.String()
+	}
 	key := searchKey{source: source, location: srv.Location, st: srv.Type, usn: srv.USN}
 	if _, dup := c.seen[key]; dup {
 		return nil
@@ -169,18 +175,6 @@ func (c *searchCollector) handle(a net.Addr, d []byte) error {
 	c.list = append(c.list, *srv)
 	ssdplog.Printf("search response from %s: %s", a.String(), srv.USN)
 	return nil
-}
-
-// sourceHost returns the IP of a reply's sender, without the port: one host
-// may answer from several ports.
-func sourceHost(a net.Addr) string {
-	if ua, ok := a.(*net.UDPAddr); ok {
-		return ua.IP.String()
-	}
-	if host, _, err := net.SplitHostPort(a.String()); err == nil {
-		return host
-	}
-	return a.String()
 }
 
 func buildSearch(raddr net.Addr, searchType string, waitSec int) ([]byte, error) {

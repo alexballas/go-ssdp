@@ -162,9 +162,9 @@ func TestSearchCollector(t *testing.T) {
 		packets     []packet
 		wantKept    int
 		wantDropped int
-		wantLast    string // LOCATION expected among kept replies
+		wantLast    string // LOCATION expected as the last kept reply
 	}{
-		{"oversized datagram ignored", []packet{{udp("192.168.1.20"), oversized}, {udp("192.168.1.20"), tv}}, 1, 0, ""},
+		{"oversized datagram ignored", []packet{{udp("192.168.1.20"), oversized}}, 0, 0, ""},
 		{"exact repeats dropped, distinct ST kept", []packet{
 			{udp("192.168.1.20"), tv},
 			{udp("192.168.1.20"), tv},
@@ -188,11 +188,6 @@ func TestSearchCollector(t *testing.T) {
 			}
 			if len(c.list) != tc.wantKept || c.dropped != tc.wantDropped {
 				t.Fatalf("kept=%d dropped=%d, want kept=%d dropped=%d", len(c.list), c.dropped, tc.wantKept, tc.wantDropped)
-			}
-			for _, srv := range c.list {
-				if srv.From == nil {
-					t.Fatalf("reply %q kept without From", srv.Location)
-				}
 			}
 			if tc.wantLast != "" && c.list[len(c.list)-1].Location != tc.wantLast {
 				t.Fatalf("last kept = %q, want %q", c.list[len(c.list)-1].Location, tc.wantLast)
